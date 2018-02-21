@@ -19,13 +19,13 @@ logger = logging.getLogger('scan.py')
 
 import requests
 
-def restart_wifi():
+def restart_wifi(server):
     os.system("/sbin/ifdown --force wlan0")
     os.system("/sbin/ifup --force wlan0")
     os.system("iwconfig wlan0 mode managed")
     while True:
         ping_response = subprocess.Popen(
-            ["/bin/ping", "-c1", "-w100", "lf.internalpositioning.com"], stdout=subprocess.PIPE).stdout.read()
+            ["/bin/ping", "-c1", "-w100", server], stdout=subprocess.PIPE).stdout.read()
         if '64 bytes' in ping_response.decode('utf-8'):
             break
         time.sleep(1)
@@ -173,6 +173,11 @@ def main():
         default="https://lf.internalpositioning.com",
         help="send payload to this server")
     parser.add_argument("-n", "--nodebug", action="store_true")
+    parser.add_argument(
+        "-b",
+        "--bluetooth",
+        default=false,
+        help="Enables bluetooth scanning")
     args = parser.parse_args()
 
     # Check arguments for group
@@ -208,8 +213,10 @@ def main():
                 logger.debug("Stopping scan...")
                 stop_scan()
                 logger.debug("Stopping monitor mode...")
-                restart_wifi()
+                restart_wifi(args.server)
                 logger.debug("Restarting WiFi in managed mode...")
+            if args.bluetooth:
+                logger.debug("Starting bluetooth scan")
             start_scan(args.interface)
             payload = process_scan(args.time)
             payload['group'] = args.group
