@@ -15,6 +15,13 @@ import argparse
 import logging
 import statistics
 import atexit
+import json
+import bluetooth
+from bluetooth.ble import DiscoveryService
+
+from bt_proximity import BluetoothRSSI
+import datetime
+import threading
 logger = logging.getLogger('scan.py')
 
 import requests
@@ -132,7 +139,89 @@ def stop_scan():
         os.system("pkill -9 tshark")
         if not tshark_is_running():
             logger.info("Stopped scan")
+            
+def start_bscan():
+    logger.debug("Starting bluetooth scan")
+    
+    nearby_devices = bluetooth.discover_devices(lookup_names=True)
+    print("found %d bluetooth devices" % len(nearby_devices))    
+    with open('bluetooth.json', 'w') as f:
+      json.dump(nearby_devices, f)
+        
+    service = DiscoveryService()
+    devices = service.discover(2)
+    nearby_le_devices = devices.items()
+    print("found %d bluetooth le devices" % len(nearby_le_devices))    
+    with open('bluetooth_le.json', 'w') as f:
+      json.dump(nearby_le_devices, f)
+    
+def stop_bscan():
+    logger.debug("Stopping bluetooth scan")
+    
+def process_bscan(time_window):
+    logger.debug("Processing bluetooth scan")
+    
+    timestamp_threshold = float(time.time()) - float(time_window)
+    fingerprints = {}
+    relevant_lines = 0
+    
+    ## Process bt devices
+    with open('bluetooth.json', 'r') as f:
+      nearby_devices = json.load(f)
+      for device in nearby_devices:
+        try:
+          print(device)
+          mac = device["addr"]
+          b = BluetoothRSSI(addr=mac)
+          rssi = b.get_rssi()
+          if rssi is not None:
+            relevant_lines+=1
+            
+            if mac not in fingerprints:
+              fingerprints[mac] = []
+            fingerprints[mac].append(float(rssi))
+        except:
+            pass
+    ## Process btle devices
+    with open('bluetooth_le.json', 'r') as f:
+      nearby_devices = json.load(f)
+      for device in nearby_devices:
+        try:
+          print(device)
+          mac = device["addr"]
+          b = BluetoothRSSI(addr=mac)
+          rssi = b.get_rssi()
+          if rssi is not None:
+            relevant_lines+=1
+            
+            if mac not in fingerprints:
+              fingerprints[mac] = []
+            fingerprints[mac].append(float(rssi))
+        except:
+            pass
+        
+    
+    # Compute medians
+    fingerprints2 = []
+    for mac in fingerprints:
+        if len(fingerprints[mac]) == 0:
+            continue
+        print(mac)
+        print(fingerprints[mac])
+        fingerprints2.append(
+            {"mac": mac, "rssi": int(statistics.median(fingerprints[mac]))})
 
+    logger.debug("Processed %d lines, found %d fingerprints in %d relevant lines" %
+                 (len(output.splitlines()), len(fingerprints2),relevant_lines))
+
+    payload = {
+        "node": socket.gethostname(),
+        "signals": fingerprints2,
+        "timestamp": int(
+            time.time())}
+    logger.debug(payload)
+    return payload
+    
 
 def main():
     # Check if SUDO
@@ -216,7 +305,16 @@ def main():
                 restart_wifi(args.server)
                 logger.debug("Restarting WiFi in managed mode...")
             if args.bluetooth:
-                logger.debug("Starting bluetooth scan")
+                start_bscan()
+                btpayload = process_bscan(args.time)
+                btpayload['group'] = args.group
+                if len(btpayload['signals']) > 0:
+                    r = requests.post(
+                        args.server +
+                        "/reversefingerprint",
+                        json=btpayload)
+                    logger.debug(
+                        "Sent to server with status code: " + str(r.status_code))
             start_scan(args.interface)
             payload = process_scan(args.time)
             payload['group'] = args.group
