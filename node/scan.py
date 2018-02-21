@@ -170,10 +170,10 @@ def process_bscan(time_window):
       nearby_devices = json.load(f)
       for device in nearby_devices:
         try:
-          print(device)
           mac = device["addr"]
           b = BluetoothRSSI(addr=mac)
           rssi = b.get_rssi()
+          print(b + " " + rssi)
           if rssi is not None:
             relevant_lines+=1
             
@@ -187,10 +187,10 @@ def process_bscan(time_window):
       nearby_devices = json.load(f)
       for device in nearby_devices:
         try:
-          print(device)
           mac = device["addr"]
           b = BluetoothRSSI(addr=mac)
           rssi = b.get_rssi()
+          print(b + " " + rssi)
           if rssi is not None:
             relevant_lines+=1
             
@@ -222,6 +222,17 @@ def process_bscan(time_window):
     logger.debug(payload)
     return payload
     
+def bluetooth_listen(sleep, group, server):
+    while True:
+      start_bscan()
+      btpayload = process_bscan(sleep)
+      btpayload['group'] = group
+      if len(btpayload['signals']) > 0:
+        r = requests.post(
+          server + "/reversefingerprint",
+          json=btpayload)
+        logger.debug("Sent to server with status code: " + str(r.status_code))
+      time.sleep(sleep)
 
 def main():
     # Check if SUDO
@@ -295,6 +306,21 @@ def main():
     logger.debug("Using server " + args.server)
     print("Using group " + args.group)
     logger.debug("Using group " + args.group)
+    
+    if args.bluetooth:
+      thread = threading.Thread(
+        target=bluetooth_listen, 
+        args=(), 
+        kwargs={
+          'sleep': args.time,
+          'group': arg.group,
+          'server': args.server
+        }
+      )
+      # Daemonize
+      thread.daemon = True
+      # Start the thread
+      thread.start()
 
     while True:
         try:
@@ -305,16 +331,17 @@ def main():
                 restart_wifi(args.server)
                 logger.debug("Restarting WiFi in managed mode...")
             if args.bluetooth:
-                start_bscan()
-                btpayload = process_bscan(args.time)
-                btpayload['group'] = args.group
-                if len(btpayload['signals']) > 0:
-                    r = requests.post(
-                        args.server +
-                        "/reversefingerprint",
-                        json=btpayload)
-                    logger.debug(
-                        "Sent to server with status code: " + str(r.status_code))
+                #start_bscan()
+                #btpayload = process_bscan(args.time)
+                #btpayload['group'] = args.group
+                #if len(btpayload['signals']) > 0:
+                #    r = requests.post(
+                #        args.server +
+                #        "/reversefingerprint",
+                #        json=btpayload)
+                #    logger.debug(
+                #        "Sent to server with status code: " + str(r.status_code))
+                        
             start_scan(args.interface)
             payload = process_scan(args.time)
             payload['group'] = args.group
