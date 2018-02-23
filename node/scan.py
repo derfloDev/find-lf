@@ -3,7 +3,6 @@
 # Copyright 2015-2017 Zack Scholl. All rights reserved.
 # Use of this source code is governed by a AGPL
 # license that can be found in the LICENSE file.
-
 import sys
 import json
 import socket
@@ -18,13 +17,72 @@ import atexit
 import json
 import bluetooth
 from bluetooth.ble import DiscoveryService
-
-from bt_proximity import BluetoothRSSI
+#from bt_proximity import BluetoothRSSI
 import datetime
 import threading
 logger = logging.getLogger('scan.py')
-
 import requests
+
+from bluepy.btle import Scanner, DefaultDelegate
+import bluetooth._bluetooth as bt
+import struct
+import array
+import fcntl
+
+class BluetoothRSSI(object):
+    """Object class for getting the RSSI value of a Bluetooth address.
+    Reference: https://github.com/dagar/bluetooth-proximity
+    """
+    def __init__(self, addr):
+        self.addr = addr
+        self.hci_sock = bt.hci_open_dev(0)
+        self.hci_fd = self.hci_sock.fileno()
+        self.bt_sock = bluetooth.BluetoothSocket(bluetooth.L2CAP)
+        self.bt_sock.settimeout(10)
+        self.connected = False
+        self.cmd_pkt = None
+
+    def prep_cmd_pkt(self):
+        """Prepares the command packet for requesting RSSI"""
+        str2ba = bt.str2ba(self.addr)
+        third =bytes("\0" * 17, 'utf-8')
+        reqstr = struct.pack("6sB17s", str2ba, bt.ACL_LINK, third)        
+        request = array.array("h", reqstr)        
+        handle = fcntl.ioctl(self.hci_fd, bt.HCIGETCONNINFO, request, 1)
+        handle = struct.unpack("8xH14x", request.tostring())[0]
+        self.cmd_pkt = struct.pack('H', handle)
+        
+    def connect(self):
+        """Connects to the Bluetooth address"""
+        self.bt_sock.connect_ex((self.addr, 1))  # PSM 1 - Service Discovery
+        self.connected = True
+
+    def get_rssi(self):
+        """Gets the current RSSI value.
+        @return: The RSSI value (float) or None if the device connection fails
+                 (i.e. the device is nowhere nearby).
+        """
+        try:
+            # Only do connection if not already connected
+            if not self.connected:
+                self.connect()
+            if self.cmd_pkt is None:
+                self.prep_cmd_pkt()
+            # Send command to request RSSI
+            rssi = bt.hci_send_req(
+                self.hci_sock, bt.OGF_STATUS_PARAM,
+                bt.OCF_READ_RSSI, bt.EVT_CMD_COMPLETE, 4, self.cmd_pkt)
+            
+            retVal = None
+            if rssi[3] > 0 and rssi[3] <= 256:
+                retVal = -(256 - rssi[3])
+            if rssi[3] == 0:
+                retVal = rssi[3]
+            return retVal
+        except IOError:
+            # Happens if connection fails (e.g. device is not in range)
+            self.connected = False
+            return None
 
 def restart_wifi(server):
     os.system("/sbin/ifdown --force wlan0")
@@ -142,18 +200,51 @@ def stop_scan():
             
 def start_bscan():
     logger.debug("Starting bluetooth scan")
-    
-    nearby_devices = bluetooth.discover_devices(lookup_names=True)
-    print("found %d bluetooth devices" % len(nearby_devices))    
-    with open('bluetooth.json', 'w') as f:
-      json.dump(nearby_devices, f)
+    count = 0
+    while count < 5:
+        print(count)
         
-    service = DiscoveryService()
-    devices = service.discover(2)
-    nearby_le_devices = devices.items()
-    print("found %d bluetooth le devices" % len(nearby_le_devices))    
-    with open('bluetooth_le.json', 'w') as f:
-      json.dump(nearby_le_devices, f)
+        
+        nearby_devices = bluetooth.discover_devices(lookup_names=True)
+        logger.debug("found %d bluetooth devices" % len(nearby_devices))
+        
+        scanner = Scanner()
+        nearby_le_devices = scanner.scan(10.0)
+        logger.debug("found %d bluetooth le devices" % len(nearby_le_devices))
+        
+        with open('bluetooth.json', '+r') as f:
+            data = json.load(f)
+            for device in nearby_devices:
+                if device[0].lower() not in data:
+                    dataObj = {"type":"bt","rssi":[]}
+                    data[device[0].lower()] = dataObj
+                
+            for mac in data:
+                if data[mac]["type"] == "bt":
+                    b = BluetoothRSSI(mac)
+                    rssi = b.get_rssi()
+                    if rssi is not None:
+                        data[mac]["rssi"].append(rssi)
+            
+            for device in nearby_le_devices:
+                rssi = device.rssi
+                mac = device.addr.lower()
+                dataObj = {"type":"bt","rssi":[]}
+                if mac not in data:
+                      data[mac] = {"type":"btle","rssi":[]}
+                if rssi is not None:
+                    data[mac]["rssi"].append(float(rssi))            
+            
+            
+            f.seek(0)
+            json.dump(data, f, indent=4)
+            f.truncate() 
+            
+         
+        count += 1
+  
+    
+
     
 def stop_bscan():
     logger.debug("Stopping bluetooth scan")
@@ -164,59 +255,28 @@ def process_bscan(time_window):
     timestamp_threshold = float(time.time()) - float(time_window)
     fingerprints = {}
     relevant_lines = 0
-    
-    ## Process bt devices
-    with open('bluetooth.json', 'r') as f:
-      nearby_devices = json.load(f)
-      for device in nearby_devices:
-        try:
-          mac = device["addr"]
-          b = BluetoothRSSI(addr=mac)
-          rssi = b.get_rssi()
-          print(b + " " + rssi)
-          if rssi is not None:
-            relevant_lines+=1
-            
-            if mac not in fingerprints:
-              fingerprints[mac] = []
-            fingerprints[mac].append(float(rssi))
-        except:
-            pass
-    ## Process btle devices
-    with open('bluetooth_le.json', 'r') as f:
-      nearby_devices = json.load(f)
-      for device in nearby_devices:
-        try:
-          mac = device["addr"]
-          b = BluetoothRSSI(addr=mac)
-          rssi = b.get_rssi()
-          print(b + " " + rssi)
-          if rssi is not None:
-            relevant_lines+=1
-            
-            if mac not in fingerprints:
-              fingerprints[mac] = []
-            fingerprints[mac].append(float(rssi))
-        except:
-            pass
-        
-    
     # Compute medians
-    fingerprints2 = []
-    for mac in fingerprints:
-        if len(fingerprints[mac]) == 0:
-            continue
-        print(mac)
-        print(fingerprints[mac])
-        fingerprints2.append(
-            {"mac": mac, "rssi": int(statistics.median(fingerprints[mac]))})
+    with open('bluetooth.json', '+r') as f:
+        data = json.load(f)
+        for mac in data:
+            dataObj = data[mac]
+            if len(dataObj["rssi"]) == 0:
+                continue
+            relevant_lines += 1
+            fingerprints.append(
+            {"mac": mac, "rssi": int(statistics.median(dataObj["rssi"]))})
+            data[mac]["rssi"] = []
+            
+        f.seek(0)
+        json.dump(data, f, indent=4)
+        f.truncate() 
 
-    logger.debug("Processed %d lines, found %d fingerprints in %d relevant lines" %
-                 (len(output.splitlines()), len(fingerprints2),relevant_lines))
+    logger.debug("found %d bluetooth fingerprints in %d relevant lines" %
+                 ( len(fingerprints),relevant_lines))
 
     payload = {
         "node": socket.gethostname(),
-        "signals": fingerprints2,
+        "signals": fingerprints,
         "timestamp": int(
             time.time())}
     logger.debug(payload)
@@ -276,7 +336,7 @@ def main():
     parser.add_argument(
         "-b",
         "--bluetooth",
-        default=false,
+        default=False,
         help="Enables bluetooth scanning")
     args = parser.parse_args()
 
@@ -313,7 +373,7 @@ def main():
         args=(), 
         kwargs={
           'sleep': args.time,
-          'group': arg.group,
+          'group': args.group,
           'server': args.server
         }
       )
@@ -330,17 +390,6 @@ def main():
                 logger.debug("Stopping monitor mode...")
                 restart_wifi(args.server)
                 logger.debug("Restarting WiFi in managed mode...")
-            if args.bluetooth:
-                #start_bscan()
-                #btpayload = process_bscan(args.time)
-                #btpayload['group'] = args.group
-                #if len(btpayload['signals']) > 0:
-                #    r = requests.post(
-                #        args.server +
-                #        "/reversefingerprint",
-                #        json=btpayload)
-                #    logger.debug(
-                #        "Sent to server with status code: " + str(r.status_code))
                         
             start_scan(args.interface)
             payload = process_scan(args.time)
