@@ -2,7 +2,7 @@
 
 # Update
 apt-get update
-apt-get install -y htop vim python3 python3-requests bluetooth python-bluez git pkg-config libboost-python-dev libboost-thread-dev libbluetooth-dev libglib2.0-dev python-dev 
+apt-get install -y htop vim python3 python3-requests bluetooth python-bluez git pkg-config libboost-python-dev libboost-thread-dev libbluetooth-dev libglib2.0-dev python-dev mercurial 
 
 # Install wireshark and other basics using all defaults
 DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::="--force-confnew" --force-yes -fuy install wireless-tools firmware-atheros usbutils wireshark tshark hostapd
