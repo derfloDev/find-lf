@@ -210,10 +210,11 @@ class CommandThread (threading.Thread):
         if alreadyRunning:
             self.logger.info("already running")
             return
-        c = 'ssh -o ConnectTimeout=10 %(address)s "sudo nohup python3 scan.py --interface %(wlan)s --time %(scantime)d --group %(group)s --server %(lfserver)s < /dev/null > std.out 2> std.err &"'
+        c = 'ssh -o ConnectTimeout=10 %(address)s "sudo nohup python3 scan.py --interface %(wlan)s --time %(scantime)d --group %(group)s --server %(lfserver)s  --bluetooth %(bluetooth)s < /dev/null > std.out 2> std.err &"'
         r, code = run_command(
             c % {'address': self.config['address'],
                  'group': self.config['group'], 
+                 'bluetooth': self.config['bt'], 
                  'lfserver': self.config['lfserver'],
                  'wlan': self.config['wlan'],
                  'scantime': self.config['scantime']
@@ -358,7 +359,7 @@ def main(args, config):
         return
     elif command == "list":
         print("scanning all ips...please wait")
-        c = 'nmap -sP 192.168.1.0/24'
+        c = 'nmap -sP 192.168.178.0/24'
         r, code = run_command(c)
         logger.debug(r)
         logger.debug(code)
@@ -376,7 +377,7 @@ def main(args, config):
         print("copying ips")
         for address in config['pis']:
             c = 'ssh-copy-id %(address)s'
-            r, code = run_command(c % {'address': address})
+            r, code = run_command(c % {'address': address['address']})
             if code == 1:
                 print("Could not connect to %s" % address)
                 return
@@ -388,6 +389,11 @@ def main(args, config):
         config['address'] = pi['address']
         config['wlan'] = pi['wlan']
         config['notes'] = pi['notes']
+        config["bt"] = pi["bt"]
+        #if pi["bt"] is not None and pi["bt"] == True:
+        #    config["bt"] = "True"
+        #else:
+        #    config["bt"] = "False"
         threads.append(
             CommandThread(config.copy(), command, args.debug, len(threads) == 0))
 
