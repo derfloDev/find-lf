@@ -78,6 +78,8 @@ class BluetoothRSSI(object):
                 retVal = -(256 - rssi[3])
             if rssi[3] == 0:
                 retVal = rssi[3]
+                
+            print("rssi %d retval " % rssi[3],retVal)
             return retVal
         except IOError:
             # Happens if connection fails (e.g. device is not in range)
@@ -147,8 +149,6 @@ def process_scan(time_window):
     for mac in fingerprints:
         if len(fingerprints[mac]) == 0:
             continue
-        print(mac)
-        print(fingerprints[mac])
         fingerprints2.append(
             {"mac": mac, "rssi": int(statistics.median(fingerprints[mac]))})
 
@@ -201,39 +201,53 @@ def stop_scan():
 def start_bscan():
     logger.debug("Starting bluetooth scan")
     count = 0
-    while count < 5:
-        print(count)
-        
-        
-        nearby_devices = bluetooth.discover_devices(lookup_names=True)
+    while count < 2:
+        print(count)   
+        nearby_devices = []
+        try:
+            nearby_devices = bluetooth.discover_devices(lookup_names=True)
+        except Exception:
+            logger.error("Fatal error in bluetooth_listen", exc_info=True)
         logger.debug("found %d bluetooth devices" % len(nearby_devices))
         
-        scanner = Scanner()
-        nearby_le_devices = scanner.scan(10.0)
+        nearby_le_devices = []
+        try:
+            scanner = Scanner()
+            nearby_le_devices = scanner.scan()
+        except Exception:
+            logger.error("Fatal error in bluetooth_listen", exc_info=True)                        
         logger.debug("found %d bluetooth le devices" % len(nearby_le_devices))
         
         with open('bluetooth.json', '+r') as f:
             data = json.load(f)
             for device in nearby_devices:
-                if device[0].lower() not in data:
-                    dataObj = {"type":"bt","rssi":[]}
-                    data[device[0].lower()] = dataObj
+                mac = device[0].lower()
+                if mac not in data:
+                      data[mac] = {"type":"bt","rssi":[]} 
+                data[mac]["name"] = device[1]            
                 
             for mac in data:
                 if data[mac]["type"] == "bt":
-                    b = BluetoothRSSI(mac)
-                    rssi = b.get_rssi()
-                    if rssi is not None:
-                        data[mac]["rssi"].append(rssi)
-            
+                    try:
+                        b = BluetoothRSSI(mac)
+                        rssi = b.get_rssi()
+                        if rssi is not None:
+                            data[mac]["rssi"].append(rssi)
+                    except Exception:
+                        logger.error("Fatal error in bluetooth_listen", exc_info=True)
+                            
             for device in nearby_le_devices:
-                rssi = device.rssi
-                mac = device.addr.lower()
-                dataObj = {"type":"bt","rssi":[]}
-                if mac not in data:
-                      data[mac] = {"type":"btle","rssi":[]}
-                if rssi is not None:
-                    data[mac]["rssi"].append(float(rssi))            
+                try:
+                    rssi = device.rssi
+                    mac = device.addr.lower()
+                    if mac not in data:
+                          data[mac] = {"type":"btle","rssi":[]}
+                    data[mac]["addrType"] = device.addrType
+                    data[mac]["getScanData"] =device.getScanData()
+                    if rssi is not None:
+                        data[mac]["rssi"].append(float(rssi))    
+                except Exception:
+                        logger.error("Fatal error in bluetooth_listen", exc_info=True)
             
             
             f.seek(0)
@@ -253,7 +267,7 @@ def process_bscan(time_window):
     logger.debug("Processing bluetooth scan")
     
     timestamp_threshold = float(time.time()) - float(time_window)
-    fingerprints = {}
+    fingerprints = []
     relevant_lines = 0
     # Compute medians
     with open('bluetooth.json', '+r') as f:
@@ -263,8 +277,10 @@ def process_bscan(time_window):
             if len(dataObj["rssi"]) == 0:
                 continue
             relevant_lines += 1
+                        
             fingerprints.append(
             {"mac": mac, "rssi": int(statistics.median(dataObj["rssi"]))})
+            
             data[mac]["rssi"] = []
             
         f.seek(0)
@@ -275,7 +291,7 @@ def process_bscan(time_window):
                  ( len(fingerprints),relevant_lines))
 
     payload = {
-        "node": socket.gethostname(),
+        "node": socket.gethostname() +"-bt",
         "signals": fingerprints,
         "timestamp": int(
             time.time())}
@@ -283,8 +299,24 @@ def process_bscan(time_window):
     return payload
     
 def bluetooth_listen(sleep, group, server):
+    # empty list of bluetooth rssi
+    with open('bluetooth.json', '+r') as f:
+        data = json.load(f)
+        for mac in data:
+            dataObj = data[mac]
+            if len(dataObj["rssi"]) == 0:
+                continue
+            data[mac]["rssi"] = []            
+        f.seek(0)
+        json.dump(data, f, indent=4)
+        f.truncate() 
+        
     while True:
-      start_bscan()
+      try:
+            start_bscan()
+      except Exception:
+            logger.error("Fatal error in bluetooth_listen", exc_info=True)
+      
       btpayload = process_bscan(sleep)
       btpayload['group'] = group
       if len(btpayload['signals']) > 0:
@@ -292,7 +324,7 @@ def bluetooth_listen(sleep, group, server):
           server + "/reversefingerprint",
           json=btpayload)
         logger.debug("Sent to server with status code: " + str(r.status_code))
-      time.sleep(sleep)
+      #time.sleep(sleep)
 
 def main():
     # Check if SUDO
